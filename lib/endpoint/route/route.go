@@ -1,0 +1,237 @@
+package route
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/backube/volsync/lib/endpoint"
+	"github.com/backube/volsync/lib/meta"
+	routev1 "github.com/openshift/api/route/v1"
+	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	errorsutil "k8s.io/apimachinery/pkg/util/errors"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+const (
+	EndpointTypePassthrough             = "EndpointTypePassthrough"
+	EndpointTypeInsecureEdge            = "EndpointTypeInsecureEdge"
+	InsecureEdgeTerminationPolicyPort   = 8080
+	TLSTerminationPassthroughPolicyPort = 6443
+)
+
+var IngressPort int32 = 443
+
+type EndpointType string
+
+type Endpoint struct {
+	hostname string
+
+	port           int32
+	endpointType   EndpointType
+	namespacedName types.NamespacedName
+	objMeta        meta.ObjectMetaMutation
+}
+
+func NewEndpoint(c client.Client,
+	namespacedName types.NamespacedName,
+	eType EndpointType,
+	metaMutation meta.ObjectMetaMutation) (endpoint.Endpoint, error) {
+
+	err := routev1.AddToScheme(c.Scheme())
+	if err != nil {
+		return nil, err
+	}
+
+	if eType != EndpointTypePassthrough && eType != EndpointTypeInsecureEdge {
+		panic("unsupported endpoint type for routes")
+	}
+
+	r := &Endpoint{
+		namespacedName: namespacedName,
+		objMeta:        metaMutation,
+		endpointType:   eType,
+	}
+
+	errs := []error{}
+
+	err = r.createRoute(c)
+	errs = append(errs, err)
+
+	err = r.createRouteService(c)
+	errs = append(errs, err)
+
+	healthy, err := r.IsHealthy(c)
+	if err != nil {
+		errs = append(errs, err)
+	}
+
+	if healthy {
+		err := r.setFields(c)
+		errs = append(errs, err)
+	}
+
+	return r, errorsutil.NewAggregate(errs)
+}
+
+func (r *Endpoint) Hostname() string {
+	return r.hostname
+}
+
+func (r *Endpoint) BackendPort() int32 {
+	return r.port
+}
+
+func (r *Endpoint) NamespacedName() types.NamespacedName {
+	return r.namespacedName
+}
+
+func (r *Endpoint) IngressPort() int32 {
+	return IngressPort
+}
+
+func (r *Endpoint) IsHealthy(c client.Client) (bool, error) {
+	route := &routev1.Route{}
+	err := c.Get(context.TODO(), r.NamespacedName(), route)
+	if err != nil {
+		return false, err
+	}
+	if route.Spec.Host == "" {
+		return false, fmt.Errorf("hostname not set for rsync route: %s", route)
+	}
+
+	if len(route.Status.Ingress) > 0 && len(route.Status.Ingress[0].Conditions) > 0 {
+		for _, c := range route.Status.Ingress[0].Conditions {
+			if c.Type == routev1.RouteAdmitted && c.Status == corev1.ConditionTrue {
+				// TODO: remove setHostname and configure the hostname after this condition has been satisfied,
+				//  this is the implementation detail that we dont need the users of the interface work with
+				return true, nil
+			}
+		}
+	}
+	// TODO: probably using error.Wrap/Unwrap here makes much more sense
+	return false, fmt.Errorf("route status is not in valid state: %s", route.Status)
+}
+
+func (r *Endpoint) createRouteService(c client.Client) error {
+	port := r.BackendPort()
+
+	serviceSelector := r.objMeta.Labels()
+
+	service := corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            r.NamespacedName().Name,
+			Namespace:       r.NamespacedName().Namespace,
+			Labels:          r.objMeta.Labels(),
+			OwnerReferences: r.objMeta.OwnerReferences(),
+		},
+		Spec: corev1.ServiceSpec{
+			Ports: []corev1.ServicePort{
+				{
+					Name:     r.NamespacedName().Name,
+					Protocol: corev1.ProtocolTCP,
+					Port:     port,
+					TargetPort: intstr.IntOrString{
+						Type:   intstr.Int,
+						IntVal: port,
+					},
+				},
+			},
+			Selector: serviceSelector,
+			Type:     corev1.ServiceTypeClusterIP,
+		},
+	}
+	// TODO: consider patching an existing object if it already exists
+	err := c.Create(context.TODO(), &service, &client.CreateOptions{})
+	if err != nil && !k8serrors.IsAlreadyExists(err) {
+		return err
+	}
+
+	return nil
+}
+
+func (r *Endpoint) createRoute(c client.Client) error {
+	termination := &routev1.TLSConfig{}
+	switch r.endpointType {
+	case EndpointTypeInsecureEdge:
+		termination = &routev1.TLSConfig{
+			Termination:                   routev1.TLSTerminationEdge,
+			InsecureEdgeTerminationPolicy: "Allow",
+		}
+		r.port = int32(InsecureEdgeTerminationPolicyPort)
+	case EndpointTypePassthrough:
+		termination = &routev1.TLSConfig{
+			Termination: routev1.TLSTerminationPassthrough,
+		}
+		r.port = int32(TLSTerminationPassthroughPolicyPort)
+	}
+
+	route := routev1.Route{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            r.NamespacedName().Name,
+			Namespace:       r.NamespacedName().Namespace,
+			Labels:          r.objMeta.Labels(),
+			OwnerReferences: r.objMeta.OwnerReferences(),
+		},
+		Spec: routev1.RouteSpec{
+			Port: &routev1.RoutePort{
+				TargetPort: intstr.FromInt(int(r.port)),
+			},
+			To: routev1.RouteTargetReference{
+				Kind: "Service",
+				Name: r.NamespacedName().Name,
+			},
+			TLS: termination,
+		},
+	}
+
+	err := c.Create(context.TODO(), &route, &client.CreateOptions{})
+	if err != nil && !k8serrors.IsAlreadyExists(err) {
+		return err
+	}
+
+	return nil
+}
+
+func (r *Endpoint) getRoute(c client.Client) (*routev1.Route, error) {
+	route := &routev1.Route{}
+	err := c.Get(context.TODO(),
+		types.NamespacedName{Name: r.NamespacedName().Name, Namespace: r.NamespacedName().Namespace},
+		route)
+	if err != nil {
+		return nil, err
+	}
+	return route, err
+}
+
+func (r *Endpoint) setFields(c client.Client) error {
+	route, err := r.getRoute(c)
+	if err != nil {
+		return err
+	}
+
+	if route.Spec.Host == "" {
+		return fmt.Errorf("route %s has empty spec.host field", r.NamespacedName())
+	}
+	if route.Spec.Port == nil {
+		return fmt.Errorf("route %s has empty spec.port field", r.NamespacedName())
+	}
+
+	r.hostname = route.Spec.Host
+
+	r.port = route.Spec.Port.TargetPort.IntVal
+
+	switch route.Spec.TLS.Termination {
+	case routev1.TLSTerminationEdge:
+		r.endpointType = EndpointTypeInsecureEdge
+	case routev1.TLSTerminationPassthrough:
+		r.endpointType = EndpointTypePassthrough
+	case routev1.TLSTerminationReencrypt:
+		return fmt.Errorf("route %s has unsupported spec.spec.tls.termination value", r.NamespacedName())
+	}
+
+	return nil
+}
