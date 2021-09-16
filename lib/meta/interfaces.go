@@ -6,6 +6,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
+// TODO: alpatel,shurley: consider if this can be a json patch based implementation
+
 // NamespacedNamePair knows how to map a source and a destination namespace involved in state transfer
 type NamespacedNamePair interface {
 	// Source represents source namespace and name

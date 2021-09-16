@@ -3,17 +3,16 @@ package route
 import (
 	"context"
 	"fmt"
-
 	"github.com/backube/volsync/lib/endpoint"
 	"github.com/backube/volsync/lib/meta"
 	routev1 "github.com/openshift/api/route/v1"
 	corev1 "k8s.io/api/core/v1"
-	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	errorsutil "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 const (
@@ -58,10 +57,10 @@ func NewEndpoint(c client.Client,
 
 	errs := []error{}
 
-	err = r.createRoute(c)
+	err = r.reconcileRoute(c)
 	errs = append(errs, err)
 
-	err = r.createRouteService(c)
+	err = r.reconcileServiceForRoute(c)
 	errs = append(errs, err)
 
 	healthy, err := r.IsHealthy(c)
@@ -116,44 +115,47 @@ func (r *Endpoint) IsHealthy(c client.Client) (bool, error) {
 	return false, fmt.Errorf("route status is not in valid state: %s", route.Status)
 }
 
-func (r *Endpoint) createRouteService(c client.Client) error {
+func (r *Endpoint) reconcileServiceForRoute(c client.Client) error {
 	port := r.BackendPort()
 
 	serviceSelector := r.objMeta.Labels()
 
-	service := corev1.Service{
+	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:            r.NamespacedName().Name,
-			Namespace:       r.NamespacedName().Namespace,
-			Labels:          r.objMeta.Labels(),
-			OwnerReferences: r.objMeta.OwnerReferences(),
+			Name:      r.NamespacedName().Name,
+			Namespace: r.NamespacedName().Namespace,
 		},
-		Spec: corev1.ServiceSpec{
-			Ports: []corev1.ServicePort{
-				{
-					Name:     r.NamespacedName().Name,
-					Protocol: corev1.ProtocolTCP,
-					Port:     port,
-					TargetPort: intstr.IntOrString{
-						Type:   intstr.Int,
-						IntVal: port,
+	}
+
+	// TODO: log the return operation from CreateOrUpdate
+	_, err := controllerutil.CreateOrUpdate(context.TODO(), c, service, func() error {
+		if service.CreationTimestamp.IsZero() {
+			service.Spec = corev1.ServiceSpec{
+				Ports: []corev1.ServicePort{
+					{
+						Name:     r.NamespacedName().Name,
+						Protocol: corev1.ProtocolTCP,
+						Port:     port,
+						TargetPort: intstr.IntOrString{
+							Type:   intstr.Int,
+							IntVal: port,
+						},
 					},
 				},
-			},
-			Selector: serviceSelector,
-			Type:     corev1.ServiceTypeClusterIP,
-		},
-	}
-	// TODO: consider patching an existing object if it already exists
-	err := c.Create(context.TODO(), &service, &client.CreateOptions{})
-	if err != nil && !k8serrors.IsAlreadyExists(err) {
-		return err
-	}
+				Selector: serviceSelector,
+				Type:     corev1.ServiceTypeClusterIP,
+			}
+		}
 
-	return nil
+		service.Labels = r.objMeta.Labels()
+		service.OwnerReferences = r.objMeta.OwnerReferences()
+		return nil
+	})
+
+	return err
 }
 
-func (r *Endpoint) createRoute(c client.Client) error {
+func (r *Endpoint) reconcileRoute(c client.Client) error {
 	termination := &routev1.TLSConfig{}
 	switch r.endpointType {
 	case EndpointTypeInsecureEdge:
@@ -169,31 +171,32 @@ func (r *Endpoint) createRoute(c client.Client) error {
 		r.port = int32(TLSTerminationPassthroughPolicyPort)
 	}
 
-	route := routev1.Route{
+	route := &routev1.Route{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:            r.NamespacedName().Name,
-			Namespace:       r.NamespacedName().Namespace,
-			Labels:          r.objMeta.Labels(),
-			OwnerReferences: r.objMeta.OwnerReferences(),
-		},
-		Spec: routev1.RouteSpec{
-			Port: &routev1.RoutePort{
-				TargetPort: intstr.FromInt(int(r.port)),
-			},
-			To: routev1.RouteTargetReference{
-				Kind: "Service",
-				Name: r.NamespacedName().Name,
-			},
-			TLS: termination,
+			Name:      r.NamespacedName().Name,
+			Namespace: r.NamespacedName().Namespace,
 		},
 	}
 
-	err := c.Create(context.TODO(), &route, &client.CreateOptions{})
-	if err != nil && !k8serrors.IsAlreadyExists(err) {
-		return err
-	}
+	_, err := controllerutil.CreateOrUpdate(context.TODO(), c, route, func() error {
+		if route.CreationTimestamp.IsZero() {
+			route.Spec = routev1.RouteSpec{
+				Port: &routev1.RoutePort{
+					TargetPort: intstr.FromInt(int(r.port)),
+				},
+				To: routev1.RouteTargetReference{
+					Kind: "Service",
+					Name: r.NamespacedName().Name,
+				},
+				TLS: termination,
+			}
+		}
+		route.Labels = r.objMeta.Labels()
+		route.OwnerReferences = r.objMeta.OwnerReferences()
+		return nil
+	})
 
-	return nil
+	return err
 }
 
 func (r *Endpoint) getRoute(c client.Client) (*routev1.Route, error) {

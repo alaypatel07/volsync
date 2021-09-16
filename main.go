@@ -38,6 +38,7 @@ import (
 	volsyncv1alpha1 "github.com/backube/volsync/api/v1alpha1"
 	"github.com/backube/volsync/controllers"
 	"github.com/backube/volsync/controllers/mover/restic"
+	"github.com/backube/volsync/controllers/mover/rsyncwithstunnel"
 	"github.com/backube/volsync/controllers/utils"
 	//+kubebuilder:scaffold:imports
 )
@@ -59,6 +60,7 @@ func init() {
 func main() {
 	// Register the data movers
 	restic.Register()
+	rsyncwithstunnel.Register()
 
 	var metricsAddr string
 	var enableLeaderElection bool

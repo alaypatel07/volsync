@@ -5,11 +5,11 @@ import (
 	"github.com/backube/volsync/lib/endpoint"
 	"github.com/backube/volsync/lib/meta"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 type Endpoint struct {
@@ -77,34 +77,37 @@ func NewEndpoint(c client.Client,
 func (e *Endpoint) createService(c client.Client) error {
 	serviceSelector := e.objMeta.Labels()
 
-	service := corev1.Service{
+	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:            e.NamespacedName().Name,
-			Namespace:       e.NamespacedName().Namespace,
-			Labels:          e.objMeta.Labels(),
-			OwnerReferences: e.objMeta.OwnerReferences(),
+			Name:      e.NamespacedName().Name,
+			Namespace: e.NamespacedName().Namespace,
 		},
-		Spec: corev1.ServiceSpec{
-			Ports: []corev1.ServicePort{
-				{
-					Name:     e.NamespacedName().Name,
-					Protocol: corev1.ProtocolTCP,
-					Port:     e.ingressPort,
-					TargetPort: intstr.IntOrString{
-						Type:   intstr.Int,
-						IntVal: e.BackendPort(),
+	}
+
+	// TODO: log the return operation from CreateOrUpdate
+	_, err := controllerutil.CreateOrUpdate(context.TODO(), c, service, func() error {
+		if service.CreationTimestamp.IsZero() {
+			service.Spec = corev1.ServiceSpec{
+				Ports: []corev1.ServicePort{
+					{
+						Name:     e.NamespacedName().Name,
+						Protocol: corev1.ProtocolTCP,
+						Port:     e.IngressPort(),
+						TargetPort: intstr.IntOrString{
+							Type:   intstr.Int,
+							IntVal: e.BackendPort(),
+						},
 					},
 				},
-			},
-			Selector: serviceSelector,
-			Type:     corev1.ServiceTypeLoadBalancer,
-		},
-	}
+				Selector: serviceSelector,
+				Type:     corev1.ServiceTypeLoadBalancer,
+			}
+		}
 
-	err := c.Create(context.Background(), &service)
-	if err != nil && !errors.IsAlreadyExists(err) {
-		return err
-	}
+		service.Labels = e.objMeta.Labels()
+		service.OwnerReferences = e.objMeta.OwnerReferences()
+		return nil
+	})
 
-	return nil
+	return err
 }

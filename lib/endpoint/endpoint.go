@@ -12,7 +12,6 @@ type Endpoint interface {
 	// Hostname returns a hostname for the endpoint
 	Hostname() string
 	// BackendPort returns a port which can be used by the application behind this endpoint
-	// If an endpoint does not support a choice of backend port it will return error
 	BackendPort() int32
 	// IngressPort is a port which is used by the clients to connect to the endpoint
 	IngressPort() int32
