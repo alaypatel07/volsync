@@ -78,6 +78,8 @@ var cleanupTypes = []client.Object{
 	&batchv1.Job{},
 }
 
+var iterativeCleanupTypes = []client.Object{}
+
 func (m *Mover) Name() string { return "restic" }
 
 func (m *Mover) Synchronize(ctx context.Context) (mover.Result, error) {
@@ -131,7 +133,7 @@ func (m *Mover) Synchronize(ctx context.Context) (mover.Result, error) {
 }
 
 func (m *Mover) Cleanup(ctx context.Context) (mover.Result, error) {
-	err := utils.CleanupObjects(ctx, m.client, m.logger, m.owner, cleanupTypes)
+	err := utils.CleanupObjects(ctx, m.client, m.logger, m.owner, cleanupTypes, iterativeCleanupTypes)
 	if err != nil {
 		return mover.InProgress(), err
 	}

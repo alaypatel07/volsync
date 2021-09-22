@@ -18,6 +18,8 @@ const (
 	rsyncPort         = int32(1873)
 	rsyncConfig       = "crane2-rsync-config"
 	rsyncSecretPrefix = "crane2-rsync"
+	rsyncdLogDir      = "rsyncd-logs"
+	rsyncdLogDirPath  = "/var/log/rsyncd/"
 )
 
 // getMountPathForPVC given a PVC, returns a path where PVC can be mounted within a transfer Pod

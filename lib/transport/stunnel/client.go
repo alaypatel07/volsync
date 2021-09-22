@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/backube/volsync/lib/utils"
 	"strconv"
 	"text/template"
 
@@ -68,6 +69,17 @@ type Client struct {
 	ingressPort    int32
 
 	namespacedName types.NamespacedName
+}
+
+func (t *Client) MarkForCleanup(c client.Client, key, value string) error {
+	// update configmap
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      stunnelConfig,
+			Namespace: t.NamespacedName().Namespace,
+		},
+	}
+	return utils.UpdateWithLabel(c, cm, key, value)
 }
 
 func (t *Client) NamespacedName() types.NamespacedName {

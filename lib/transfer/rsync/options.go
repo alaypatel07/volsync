@@ -279,8 +279,9 @@ type SourceMetaObjectMutation struct {
 }
 
 func (s SourceMetaObjectMutation) ApplyTo(opts *TransferOptions) error {
-	opts.SourcePodMeta = meta.NewObjectMetaMutation(s.M, meta.MutationTypeMerge)
-	return nil
+	var err error
+	opts.SourcePodMeta, err = meta.NewObjectMetaMutation(s.M, meta.MutationTypeMerge)
+	return err
 }
 
 type DestinationMetaObjectMutation struct {
@@ -288,8 +289,9 @@ type DestinationMetaObjectMutation struct {
 }
 
 func (s DestinationMetaObjectMutation) ApplyTo(opts *TransferOptions) error {
-	opts.DestinationPodMeta = meta.NewObjectMetaMutation(s.M, meta.MutationTypeMerge)
-	return nil
+	var err error
+	opts.DestinationPodMeta, err = meta.NewObjectMetaMutation(s.M, meta.MutationTypeMerge)
+	return err
 }
 
 type Username string

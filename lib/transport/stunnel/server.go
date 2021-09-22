@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/backube/volsync/lib/utils"
 	"strconv"
 	"text/template"
 
@@ -196,6 +197,28 @@ type Server struct {
 	//caVerifyLevel string
 
 	namespacedName types.NamespacedName
+}
+
+func (s *Server) MarkForCleanup(c client.Client, key, value string) error {
+	// update configmap
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      stunnelConfig,
+			Namespace: s.NamespacedName().Namespace,
+		},
+	}
+	err := utils.UpdateWithLabel(c, cm, key, value)
+	if err != nil {
+		return err
+	}
+	// update secret
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      stunnelSecret,
+			Namespace: s.NamespacedName().Namespace,
+		},
+	}
+	return utils.UpdateWithLabel(c, secret, key, value)
 }
 
 func (s *Server) NamespacedName() types.NamespacedName {

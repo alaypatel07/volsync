@@ -20,7 +20,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/backube/volsync/controllers/mover/rsyncwithstunnel"
 	"os"
 	"runtime"
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/backube/volsync/lib/endpoint"
 	"github.com/backube/volsync/lib/meta"
+	"github.com/backube/volsync/lib/utils"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -18,6 +19,17 @@ type Endpoint struct {
 	backendPort    int32
 	namespacedName types.NamespacedName
 	objMeta        meta.ObjectMetaMutation
+}
+
+func (e *Endpoint) MarkForCleanup(c client.Client, key, value string) error {
+	// mark service for deletion
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      e.namespacedName.Name,
+			Namespace: e.namespacedName.Namespace,
+		},
+	}
+	return utils.UpdateWithLabel(c, svc, key, value)
 }
 
 func (e *Endpoint) NamespacedName() types.NamespacedName {

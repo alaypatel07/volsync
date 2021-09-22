@@ -2,6 +2,7 @@ package rsyncwithstunnel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	volsyncv1alpha1 "github.com/backube/volsync/api/v1alpha1"
 	"github.com/backube/volsync/controllers/mover"
@@ -12,11 +13,14 @@ import (
 	"github.com/backube/volsync/lib/transfer/rsync"
 	"github.com/go-logr/logr"
 	snapv1 "github.com/kubernetes-csi/external-snapshotter/client/v4/apis/volumesnapshot/v1beta1"
-	batchv1 "k8s.io/api/batch/v1"
+	routev1 "github.com/openshift/api/route/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+const cleanupLabelKey = "volsync.backube/cleanup"
 
 // Mover is the reconciliation logic for the RsyncWithStunnel-based data mover.
 type Mover struct {
@@ -43,9 +47,19 @@ type Mover struct {
 var cleanupTypes = []client.Object{
 	&corev1.PersistentVolumeClaim{},
 	&corev1.ConfigMap{},
-	&corev1.Service{},
 	&snapv1.VolumeSnapshot{},
-	&batchv1.Job{},
+	&corev1.Secret{},
+	&routev1.Route{},
+	&corev1.Pod{},
+}
+
+var iterativeCleanupTypes = []client.Object{
+	&corev1.Service{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "Service",
+			APIVersion: corev1.SchemeGroupVersion.Version,
+		},
+	},
 }
 
 func (m *Mover) Name() string { return "rsync-with-stunnel" }
@@ -71,21 +85,20 @@ func (m *Mover) Synchronize(ctx context.Context) (mover.Result, error) {
 			m.logger.Error(err, "error reconciling stunnel destination")
 			return mover.InProgress(), err
 		}
+		// On the destination, preserve the image and return it
+		if !m.isSource {
+			image, err := m.vh.EnsureImage(ctx, m.logger, dataPVC)
+			if image == nil || err != nil {
+				return mover.InProgress(), err
+			}
+			return mover.CompleteWithImage(image), nil
+		}
 	} else {
 		err := m.reconcileRsyncStunnelSource(m.client)
 		if err != nil {
 			m.logger.Error(err, "error reconciling stunnel source")
 			return mover.InProgress(), err
 		}
-	}
-
-	// On the destination, preserve the image and return it
-	if !m.isSource {
-		image, err := m.vh.EnsureImage(ctx, m.logger, dataPVC)
-		if image == nil || err != nil {
-			return mover.InProgress(), err
-		}
-		return mover.CompleteWithImage(image), nil
 	}
 
 	// On the source, just signal completion
@@ -125,7 +138,7 @@ func (m *Mover) ensureDestinationPVC(ctx context.Context) (*corev1.PersistentVol
 }
 
 func (m *Mover) Cleanup(ctx context.Context) (mover.Result, error) {
-	err := utils.CleanupObjects(ctx, m.client, m.logger, m.ownerMeta, cleanupTypes)
+	err := utils.CleanupObjects(ctx, m.client, m.logger, m.ownerMeta, cleanupTypes, iterativeCleanupTypes)
 	if err != nil {
 		return mover.InProgress(), err
 	}
@@ -186,13 +199,22 @@ func (m *Mover) reconcileRsyncStunnelDestination(c client.Client) error {
 		}
 
 		healthy, err := rsyncServer.IsHealthy(m.client)
-		if err != nil {
+		status := apierrors.APIStatus(nil)
+		// only catch apiserver errors
+		if err != nil && errors.As(err, &status) {
 			m.logger.Error(err, "error ensuring transfer health on destination", "owner", ownerObjectKey)
 			return err
 		}
+		var completed bool
 		if !healthy {
-			m.logger.Error(nil, "rsync server is not healthy", "owner", ownerObjectKey)
-			return fmt.Errorf("rsync server is not healthy")
+			completed, err = rsyncServer.Completed(m.client)
+			if err != nil {
+				return err
+			}
+			if !completed {
+				m.logger.Error(nil, "rsync server is not healthy", "owner", ownerObjectKey)
+				return fmt.Errorf("rsync server is not healthy")
+			}
 		}
 
 		hostname := rsyncServer.Endpoint().Hostname()
@@ -202,6 +224,10 @@ func (m *Mover) reconcileRsyncStunnelDestination(c client.Client) error {
 		m.destinationStatus.Address = &hostname
 		m.destinationStatus.Port = &port
 		//m.destinationStatus.SSHKeys = &sshKeys
+		if !completed {
+			return fmt.Errorf("rsync server has not completed")
+		}
+		rsyncServer.MarkForCleanup(m.client, cleanupLabelKey, string(m.ownerMeta.GetUID()))
 	}
 
 	// TODO: report rsync connection coordinates
@@ -227,14 +253,15 @@ func (m *Mover) reconcileRsyncStunnelSource(c client.Client) error {
 
 	rsyncOptions = append(rsyncOptions, rsync.SourceContainerMutation{C: containerMutations}, rsync.SourceMetaObjectMutation{M: m.metaObject(pvc)})
 
+	var client transfer.Client
 	switch {
 	case m.transport == RsyncWithStunnelAnnotation:
-		_, err = rsync.NewRsyncTransferClientWithStunnel(m.client, *m.sourceSpec.Address, route.IngressPort, transfer.NewSingletonPVC(pvc), rsyncOptions...)
+		client, err = rsync.NewRsyncTransferClientWithStunnel(m.client, *m.sourceSpec.Address, route.IngressPort, transfer.NewSingletonPVC(pvc), rsyncOptions...)
 		if err != nil {
 			return err
 		}
 	case m.transport == RsyncWithNullAnnotation:
-		_, err = rsync.NewRsyncClientWithNullTransport(m.client, *m.sourceSpec.Address, *m.sourceSpec.Port, transfer.NewSingletonPVC(pvc), rsyncOptions...)
+		client, err = rsync.NewRsyncClientWithNullTransport(m.client, *m.sourceSpec.Address, *m.sourceSpec.Port, transfer.NewSingletonPVC(pvc), rsyncOptions...)
 		if err != nil {
 			return err
 		}
@@ -242,7 +269,16 @@ func (m *Mover) reconcileRsyncStunnelSource(c client.Client) error {
 		return fmt.Errorf("invalid transport annotation found")
 	}
 
-	return err
+	complete, err := client.IsCompleted(m.client)
+	if err != nil {
+		return err
+	}
+
+	if complete {
+		return client.MarkForCleanup(c, cleanupLabelKey, string(m.ownerMeta.GetUID()))
+	}
+
+	return fmt.Errorf("client has not completed yet")
 }
 
 // getRsyncTransferContainerMutation returns container mutation to be applied on Rsync tranfer pods

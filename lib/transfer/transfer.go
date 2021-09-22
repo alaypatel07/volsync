@@ -23,8 +23,13 @@ type Server interface {
 	ListenPort() int32
 	// IsHealthy returns whether or not all Kube resources used by endpoint are healthy
 	IsHealthy(c client.Client) (bool, error)
+	// Completed returns whether or not the current attempt of transfer is completed
+	Completed(c client.Client) (bool, error)
 	// PVCs returns the list of PVCs the transfer will migrate
 	PVCs() []*corev1.PersistentVolumeClaim
+	// MarkForCleanup add the required labels to all the resources for
+	// cleaning up
+	MarkForCleanup(c client.Client, key, value string) error
 }
 
 type Client interface {
@@ -32,6 +37,10 @@ type Client interface {
 	Transport() transport.Transport
 	// PVCs returns the list of PVCs the transfer will migrate
 	PVCs() []*corev1.PersistentVolumeClaim
+	// IsCompleted returns whether the client is done
+	IsCompleted(c client.Client) (bool, error)
+	// MarkForCleanup adds a key-value label to all the resources to be cleaned up
+	MarkForCleanup(c client.Client, key, value string) error
 }
 
 // IsPodHealthy is a utility function that can be used by various
@@ -45,6 +54,34 @@ func IsPodHealthy(c client.Client, pod client.ObjectKey) (bool, error) {
 	}
 
 	return areContainersReady(p)
+}
+
+// IsPodCompleted is a utility function that can be used by various
+// implementations to check if the server pod deployed is completed.
+// if containerName is empty string then it will check for completion of
+// all the containers
+func IsPodCompleted(c client.Client, podKey client.ObjectKey, containerName string) (bool, error) {
+	pod := &corev1.Pod{}
+	err := c.Get(context.Background(), podKey, pod)
+	if err != nil {
+		return false, err
+	}
+
+	if len(pod.Status.ContainerStatuses) != 2 {
+		return false, fmt.Errorf("expected two contaier statuses found %d, for pod %s",
+			len(pod.Status.ContainerStatuses), client.ObjectKey{Namespace: pod.Namespace, Name: pod.Name})
+	}
+
+	for _, containerStatus := range pod.Status.ContainerStatuses {
+		if containerName != "" && containerStatus.Name == containerName {
+			return containerStatus.State.Terminated != nil, nil
+		} else {
+			if containerStatus.State.Terminated == nil {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
 }
 
 func areContainersReady(pod *corev1.Pod) (bool, error) {

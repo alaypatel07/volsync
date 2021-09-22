@@ -8,6 +8,7 @@ import (
 	"github.com/backube/volsync/lib/transport"
 	"github.com/backube/volsync/lib/transport/null"
 	"github.com/backube/volsync/lib/transport/stunnel"
+	"github.com/backube/volsync/lib/utils"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -37,6 +38,45 @@ func (tc *Client) PVCs() []*corev1.PersistentVolumeClaim {
 		pvcs = append(pvcs, pvc.Claim())
 	}
 	return pvcs
+}
+
+func (tc *Client) IsCompleted(c client.Client) (bool, error) {
+	podList := &corev1.PodList{}
+	err := c.List(context.Background(), podList, client.MatchingLabels(tc.options.SourcePodMeta.Labels()))
+	if err != nil {
+		return false, err
+	}
+
+	for _, pod := range podList.Items {
+		if pod.Status.ContainerStatuses != nil || len(pod.Status.ContainerStatuses) > 0 {
+			for _, containerStatus := range pod.Status.ContainerStatuses {
+				if containerStatus.State.Terminated != nil && containerStatus.State.Terminated.ExitCode == 0 {
+					return true, nil
+				}
+			}
+		}
+	}
+	return false, err
+}
+
+func (tc *Client) MarkForCleanup(c client.Client, key, value string) error {
+	err := tc.Transport().MarkForCleanup(c, key, value)
+	if err != nil {
+		return err
+	}
+
+	podList := &corev1.PodList{}
+	err = c.List(context.Background(), podList, client.MatchingLabels(tc.options.SourcePodMeta.Labels()))
+	if err != nil {
+		return err
+	}
+
+	for _, p := range podList.Items {
+		if err := utils.UpdateWithLabel(c, &p, key, value); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func NewRsyncTransferClient(c client.Client, transportClient transport.Transport, pvcList transfer.PVCList, opts ...TransferOption) (transfer.Client, error) {

@@ -19,6 +19,7 @@ package rsyncwithstunnel
 
 import (
 	"github.com/go-logr/logr"
+	routev1 "github.com/openshift/api/route/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	volsyncv1alpha1 "github.com/backube/volsync/api/v1alpha1"
@@ -75,6 +76,8 @@ func (rb *Builder) FromSource(client client.Client, logger logr.Logger,
 		return nil, err
 	}
 
+	routev1.AddToScheme(client.Scheme())
+
 	return &Mover{
 		client:       client,
 		logger:       logger.WithValues("method", "RsyncWithStunnel"),
@@ -121,6 +124,8 @@ func (rb *Builder) FromDestination(client client.Client, logger logr.Logger,
 	if err != nil {
 		return nil, err
 	}
+
+	routev1.AddToScheme(client.Scheme())
 
 	return &Mover{
 		client:      client,

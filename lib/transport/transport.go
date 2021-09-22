@@ -8,6 +8,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"time"
 
 	"github.com/backube/volsync/lib/meta"
@@ -39,6 +40,8 @@ type Transport interface {
 	// in case of a null transport, it will simple relay the endpoint hostname
 	// in case of a valid transport, it will have a custom hostname where transfers will have to connect to.
 	Hostname() string
+	// MarkForCleanup
+	MarkForCleanup(c client.Client, key, value string) error
 }
 
 type Options struct {

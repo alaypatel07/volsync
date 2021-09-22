@@ -10,8 +10,10 @@ import (
 	"github.com/backube/volsync/lib/transport"
 	"github.com/backube/volsync/lib/transport/null"
 	"github.com/backube/volsync/lib/transport/stunnel"
+	"github.com/backube/volsync/lib/utils"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/rand"
+	"strconv"
 	"text/template"
 	"time"
 
@@ -81,6 +83,59 @@ func (r *TransferServer) Transport() transport.Transport {
 
 func (r *TransferServer) IsHealthy(c client.Client) (bool, error) {
 	return transfer.IsPodHealthy(c, client.ObjectKey{Namespace: r.pvcList.GetNamespaces()[0], Name: "rsync-server"})
+}
+
+func (r *TransferServer) Completed(c client.Client) (bool, error) {
+	return transfer.IsPodCompleted(c, client.ObjectKey{Namespace: r.pvcList.GetNamespaces()[0], Name: "rsync-server"}, "rsync")
+}
+
+// MarkForCleanup marks the provided "obj" to be deleted at the end of the
+// synchronization iteration.
+func (r *TransferServer) MarkForCleanup(c client.Client, key, value string) error {
+	// mark endpoint for deletion
+	err := r.Endpoint().MarkForCleanup(c, key, value)
+	if err != nil {
+		return err
+	}
+
+	// mark transport for deletion
+	err = r.Transport().MarkForCleanup(c, key, value)
+	if err != nil {
+		return err
+	}
+
+	namespace := r.pvcList.GetNamespaces()[0]
+	// update configmap
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      rsyncConfig,
+			Namespace: namespace,
+		},
+	}
+	err = utils.UpdateWithLabel(c, cm, key, value)
+	if err != nil {
+		return err
+	}
+	// update secret
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      rsyncSecretPrefix,
+			Namespace: namespace,
+		},
+	}
+	err = utils.UpdateWithLabel(c, secret, key, value)
+	if err != nil {
+		return err
+	}
+
+	// update pod
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "rsync-server",
+			Namespace: namespace,
+		},
+	}
+	return utils.UpdateWithLabel(c, pod, key, value)
 }
 
 func (r *TransferServer) PVCs() []*corev1.PersistentVolumeClaim {
@@ -295,8 +350,9 @@ func (r *TransferServer) createRsyncServer(c client.Client, ns string) error {
 	volumes = append(volumes, r.Transport().Volumes()...)
 
 	podSpec := corev1.PodSpec{
-		Containers: containers,
-		Volumes:    volumes,
+		Containers:    containers,
+		Volumes:       volumes,
+		RestartPolicy: corev1.RestartPolicyNever,
 	}
 
 	applyPodMutations(&podSpec, r.options.DestinationPodMutations)
@@ -345,6 +401,12 @@ func getConfigVolumes(mode int32) []corev1.Volume {
 				},
 			},
 		},
+		{
+			Name: rsyncdLogDir,
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		},
 	}
 }
 
@@ -362,16 +424,24 @@ func (r *TransferServer) getPVCVolumeMounts(ns string) []corev1.VolumeMount {
 }
 
 func (r *TransferServer) getPodTemplate(volumeMounts []corev1.VolumeMount) []corev1.Container {
+	rsyncCommandTemplate := `/usr/bin/rsync --daemon --no-detach --port=` + strconv.Itoa(int(r.ListenPort())) + ` -vvv | tee ` + rsyncdLogDirPath + `rsync.log &
+while true; do
+	grep "_exit_cleanup" ` + rsyncdLogDirPath + `rsync.log >> /dev/null
+	if [[ $? -eq 0 ]]
+	then
+		exit 0; 
+	fi
+	sleep 1;
+done`
+
 	return []corev1.Container{
 		{
 			Name:  RsyncContainer,
 			Image: rsyncImage,
 			Command: []string{
-				"/usr/bin/rsync",
-				"--daemon",
-				"--no-detach",
-				fmt.Sprintf("--port=%d", r.ListenPort()),
-				"-vvv",
+				"/bin/bash",
+				"-c",
+				rsyncCommandTemplate,
 			},
 			Ports: []corev1.ContainerPort{
 				{
@@ -413,6 +483,10 @@ func getConfigVolumeMounts() []corev1.VolumeMount {
 		{
 			Name:      rsyncSecretPrefix,
 			MountPath: "/etc/rsync-secret",
+		},
+		{
+			Name:      rsyncdLogDir,
+			MountPath: rsyncdLogDirPath,
 		},
 	}
 }

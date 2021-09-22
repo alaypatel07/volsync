@@ -4,6 +4,7 @@ import (
 	"github.com/backube/volsync/lib/transport"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const TypeTransportNull = "TransportNull"
@@ -12,6 +13,10 @@ type Null struct {
 	listenPort  int32
 	connectPort int32
 	hostname    string
+}
+
+func (n *Null) MarkForCleanup(c client.Client, key, value string) error {
+	return nil
 }
 
 func (n *Null) NamespacedName() types.NamespacedName {
