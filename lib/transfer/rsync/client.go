@@ -50,7 +50,7 @@ func (tc *Client) IsCompleted(c client.Client) (bool, error) {
 	for _, pod := range podList.Items {
 		if pod.Status.ContainerStatuses != nil || len(pod.Status.ContainerStatuses) > 0 {
 			for _, containerStatus := range pod.Status.ContainerStatuses {
-				if containerStatus.State.Terminated != nil && containerStatus.State.Terminated.ExitCode == 0 {
+				if containerStatus.Name == "rsync" && containerStatus.State.Terminated != nil && containerStatus.State.Terminated.ExitCode == 0 {
 					return true, nil
 				}
 			}

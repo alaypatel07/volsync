@@ -80,10 +80,15 @@ func (m *Mover) Synchronize(ctx context.Context) (mover.Result, error) {
 
 	// create route endpoint on the destination
 	if !m.isSource {
-		err := m.reconcileRsyncStunnelDestination(m.client)
+		dataTransferResult, err := m.reconcileRsyncStunnelDestination(m.client)
 		if err != nil {
 			m.logger.Error(err, "error reconciling stunnel destination")
-			return mover.InProgress(), err
+			return dataTransferResult, err
+		}
+		if dataTransferResult.Completed {
+			m.logger.Info("rsync transfer complete, saving snapshot")
+		} else {
+			return mover.InProgress(), nil
 		}
 		// On the destination, preserve the image and return it
 		if !m.isSource {
@@ -94,11 +99,11 @@ func (m *Mover) Synchronize(ctx context.Context) (mover.Result, error) {
 			return mover.CompleteWithImage(image), nil
 		}
 	} else {
-		err := m.reconcileRsyncStunnelSource(m.client)
+		dataTransferResult, err := m.reconcileRsyncStunnelSource(m.client)
 		if err != nil {
 			m.logger.Error(err, "error reconciling stunnel source")
-			return mover.InProgress(), err
 		}
+		return dataTransferResult, err
 	}
 
 	// On the source, just signal completion
@@ -157,128 +162,132 @@ func (m *Mover) serviceSelector() map[string]string {
 	}
 }
 
-func (m *Mover) reconcileRsyncStunnelDestination(c client.Client) error {
+func (m *Mover) reconcileRsyncStunnelDestination(c client.Client) (mover.Result, error) {
 	pvc := &corev1.PersistentVolumeClaim{}
 	p := client.ObjectKey{Namespace: m.ownerMeta.GetNamespace(), Name: *m.mainPVCName}
 	ownerObjectKey := client.ObjectKey{Name: m.ownerMeta.GetName(), Namespace: m.ownerMeta.GetNamespace()}
 	err := c.Get(context.TODO(), p, pvc)
 	if err != nil {
 		m.logger.Error(err, "error getting pvc for rsync destination reconciliation", "pvc", p)
-		return err
+		return mover.InProgress(), err
 	}
 
-	if !m.isSource {
-		// TODO: 1. inject proper labels
-		// TODO: 2. inject ownerMeta refs
-		// TODO: 3. convert the pod into job to get the completion information
-		// TODO: 4. convert the New create methods into create or update for proper reconciliations
-		// TODO: 5. propose the interface methods
-		rsyncTransferOptions, err := m.getRsyncTransferOptions()
+	// TODO: 1. inject proper labels
+	// TODO: 2. inject ownerMeta refs
+	// TODO: 3. convert the pod into job to get the completion information
+	// TODO: 4. convert the New create methods into create or update for proper reconciliations
+	// TODO: 5. propose the interface methods
+	rsyncTransferOptions, err := m.getRsyncTransferOptions()
+	if err != nil {
+		m.logger.Error(err, "error getting rsync transfer options", "owner", ownerObjectKey)
+		return mover.InProgress(), err
+	}
+
+	rsyncTransferOptions = append(rsyncTransferOptions, rsync.DestinationContainerMutation{C: m.getRsyncTransferContainerMutation()}, rsync.DestinationMetaObjectMutation{M: m.metaObject(pvc)})
+
+	// create rsync server and its resources
+	var rsyncServer transfer.Server
+	switch m.transport {
+	case RsyncWithStunnelAnnotation:
+		rsyncServer, err = rsync.NewRsyncTransferServerWithStunnel(m.client, transfer.NewSingletonPVC(pvc), rsyncTransferOptions...)
 		if err != nil {
-			m.logger.Error(err, "error getting rsync transfer options", "owner", ownerObjectKey)
-			return err
+			m.logger.Error(err, "error ensuring transfer on destination", "owner", ownerObjectKey)
+			return mover.InProgress(), err
 		}
-
-		rsyncTransferOptions = append(rsyncTransferOptions, rsync.DestinationContainerMutation{C: m.getRsyncTransferContainerMutation()}, rsync.DestinationMetaObjectMutation{M: m.metaObject(pvc)})
-
-		// create rsync server and its resources
-		var rsyncServer transfer.Server
-		switch m.transport {
-		case RsyncWithStunnelAnnotation:
-			rsyncServer, err = rsync.NewRsyncTransferServerWithStunnel(m.client, transfer.NewSingletonPVC(pvc), rsyncTransferOptions...)
-			if err != nil {
-				m.logger.Error(err, "error ensuring transfer on destination", "owner", ownerObjectKey)
-				return err
-			}
-		case RsyncWithNullAnnotation:
-			rsyncServer, err = rsync.NewRsyncTransferServerWithNull(m.client, transfer.NewSingletonPVC(pvc), rsyncTransferOptions...)
-			if err != nil {
-				m.logger.Error(err, "error ensuring transfer on destination", "owner", ownerObjectKey)
-				return err
-			}
+	case RsyncWithNullAnnotation:
+		rsyncServer, err = rsync.NewRsyncTransferServerWithNull(m.client, transfer.NewSingletonPVC(pvc), rsyncTransferOptions...)
+		if err != nil {
+			m.logger.Error(err, "error ensuring transfer on destination", "owner", ownerObjectKey)
+			return mover.InProgress(), err
 		}
-
-		healthy, err := rsyncServer.IsHealthy(m.client)
-		status := apierrors.APIStatus(nil)
-		// only catch apiserver errors
-		if err != nil && errors.As(err, &status) {
-			m.logger.Error(err, "error ensuring transfer health on destination", "owner", ownerObjectKey)
-			return err
-		}
-		var completed bool
-		if !healthy {
-			completed, err = rsyncServer.Completed(m.client)
-			if err != nil {
-				return err
-			}
-			if !completed {
-				m.logger.Error(nil, "rsync server is not healthy", "owner", ownerObjectKey)
-				return fmt.Errorf("rsync server is not healthy")
-			}
-		}
-
-		hostname := rsyncServer.Endpoint().Hostname()
-		port := rsyncServer.Endpoint().IngressPort()
-		//sshKeys := rsyncServer.Transport().Credentials().Name
-
-		m.destinationStatus.Address = &hostname
-		m.destinationStatus.Port = &port
-		//m.destinationStatus.SSHKeys = &sshKeys
-		if !completed {
-			return fmt.Errorf("rsync server has not completed")
-		}
-		rsyncServer.MarkForCleanup(m.client, cleanupLabelKey, string(m.ownerMeta.GetUID()))
 	}
 
-	// TODO: report rsync connection coordinates
+	healthy, err := rsyncServer.IsHealthy(m.client)
+	status := apierrors.APIStatus(nil)
+	// only catch apiserver errors
+	if err != nil && errors.As(err, &status) {
+		m.logger.Error(err, "error ensuring transfer health on destination", "owner", ownerObjectKey)
+		return mover.InProgress(), err
+	}
+	var completed bool
+	if !healthy {
+		completed, err = rsyncServer.Completed(m.client)
+		if err != nil {
+			return mover.InProgress(), err
+		}
+		if !completed {
+			m.logger.Error(nil, "rsync server is not healthy", "owner", ownerObjectKey)
+			return mover.InProgress(), fmt.Errorf("rsync server is not healthy")
+		}
+	}
 
-	return nil
+	hostname := rsyncServer.Endpoint().Hostname()
+	port := rsyncServer.Endpoint().IngressPort()
+	//sshKeys := rsyncServer.Transport().Credentials().Name
+
+	m.destinationStatus.Address = &hostname
+	m.destinationStatus.Port = &port
+	//m.destinationStatus.SSHKeys = &sshKeys
+	if !completed {
+		return mover.InProgress(), nil
+	}
+	err = rsyncServer.MarkForCleanup(m.client, cleanupLabelKey, string(m.ownerMeta.GetUID()))
+	if err != nil {
+		return mover.InProgress(), nil
+	}
+
+	return mover.Complete(), nil
 }
 
-func (m *Mover) reconcileRsyncStunnelSource(c client.Client) error {
+func (m *Mover) reconcileRsyncStunnelSource(c client.Client) (mover.Result, error) {
 	pvc := &corev1.PersistentVolumeClaim{}
 	p := client.ObjectKey{Namespace: m.ownerMeta.GetNamespace(), Name: *m.mainPVCName}
 	err := c.Get(context.TODO(), p, pvc)
 	if err != nil {
 		m.logger.Error(err, "error getting pvc for rsync destination reconciliation", "pvc", p)
-		return err
+		return mover.InProgress(), err
 	}
 
 	containerMutations := m.getRsyncTransferContainerMutation()
 
 	rsyncOptions, err := m.getRsyncTransferOptions()
 	if err != nil {
-		return err
+		return mover.InProgress(), err
 	}
 
 	rsyncOptions = append(rsyncOptions, rsync.SourceContainerMutation{C: containerMutations}, rsync.SourceMetaObjectMutation{M: m.metaObject(pvc)})
 
-	var client transfer.Client
+	var rsyncClient transfer.Client
 	switch {
 	case m.transport == RsyncWithStunnelAnnotation:
-		client, err = rsync.NewRsyncTransferClientWithStunnel(m.client, *m.sourceSpec.Address, route.IngressPort, transfer.NewSingletonPVC(pvc), rsyncOptions...)
+		rsyncClient, err = rsync.NewRsyncTransferClientWithStunnel(m.client, *m.sourceSpec.Address, route.IngressPort, transfer.NewSingletonPVC(pvc), rsyncOptions...)
 		if err != nil {
-			return err
+			return mover.InProgress(), err
 		}
 	case m.transport == RsyncWithNullAnnotation:
-		client, err = rsync.NewRsyncClientWithNullTransport(m.client, *m.sourceSpec.Address, *m.sourceSpec.Port, transfer.NewSingletonPVC(pvc), rsyncOptions...)
+		rsyncClient, err = rsync.NewRsyncClientWithNullTransport(m.client, *m.sourceSpec.Address, *m.sourceSpec.Port, transfer.NewSingletonPVC(pvc), rsyncOptions...)
 		if err != nil {
-			return err
+			return mover.InProgress(), err
 		}
 	default:
-		return fmt.Errorf("invalid transport annotation found")
+		return mover.Complete(), fmt.Errorf("invalid transport annotation found")
 	}
 
-	complete, err := client.IsCompleted(m.client)
+	complete, err := rsyncClient.IsCompleted(m.client)
 	if err != nil {
-		return err
+		return mover.InProgress(), err
 	}
 
-	if complete {
-		return client.MarkForCleanup(c, cleanupLabelKey, string(m.ownerMeta.GetUID()))
+	if !complete {
+		return mover.InProgress(), nil
 	}
 
-	return fmt.Errorf("client has not completed yet")
+	err = rsyncClient.MarkForCleanup(c, cleanupLabelKey, string(m.ownerMeta.GetUID()))
+	if err != nil {
+		return mover.InProgress(), err
+	}
+
+	return mover.Complete(), nil
 }
 
 // getRsyncTransferContainerMutation returns container mutation to be applied on Rsync tranfer pods
