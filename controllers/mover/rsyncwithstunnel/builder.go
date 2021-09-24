@@ -20,6 +20,8 @@ package rsyncwithstunnel
 import (
 	"github.com/go-logr/logr"
 	routev1 "github.com/openshift/api/route/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	volsyncv1alpha1 "github.com/backube/volsync/api/v1alpha1"
@@ -43,8 +45,9 @@ type Builder struct{}
 
 var _ mover.Builder = &Builder{}
 
-func Register() {
+func Register(scheme *runtime.Scheme) {
 	mover.Register(&Builder{})
+	utilruntime.Must(routev1.AddToScheme(scheme))
 }
 
 func (rb *Builder) FromSource(client client.Client, logger logr.Logger,
@@ -75,8 +78,6 @@ func (rb *Builder) FromSource(client client.Client, logger logr.Logger,
 	if err != nil {
 		return nil, err
 	}
-
-	routev1.AddToScheme(client.Scheme())
 
 	return &Mover{
 		client:       client,

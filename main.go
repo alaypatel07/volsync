@@ -60,7 +60,7 @@ func init() {
 func main() {
 	// Register the data movers
 	restic.Register()
-	rsyncwithstunnel.Register()
+	rsyncwithstunnel.Register(scheme)
 
 	var metricsAddr string
 	var enableLeaderElection bool

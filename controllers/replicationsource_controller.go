@@ -174,6 +174,9 @@ func reconcileSrcUsingCatalog(
 	var mResult mover.Result
 	if shouldSync && !apimeta.IsStatusConditionFalse(instance.Status.Conditions, volsyncv1alpha1.ConditionSynchronizing) {
 		mResult, err = dataMover.Synchronize(ctx)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
 		if mResult.Completed {
 			apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
 				Type:    volsyncv1alpha1.ConditionSynchronizing,
@@ -204,10 +207,10 @@ func reconcileSrcUsingCatalog(
 func (r *ReplicationSourceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&volsyncv1alpha1.ReplicationSource{}).
-		Owns(&batchv1.Job{}).
+		Owns(&corev1.Pod{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&corev1.Secret{}).
-		Owns(&corev1.Service{}).
+		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.ServiceAccount{}).
 		Owns(&rbacv1.Role{}).
 		Owns(&rbacv1.RoleBinding{}).
