@@ -174,20 +174,24 @@ func reconcileSrcUsingCatalog(
 	var mResult mover.Result
 	if shouldSync && !apimeta.IsStatusConditionFalse(instance.Status.Conditions, volsyncv1alpha1.ConditionSynchronizing) {
 		mResult, err = dataMover.Synchronize(ctx)
-		if err != nil {
-			return ctrl.Result{}, err
+		var message string
+		if err == nil {
+			message = "Cleaning up"
+		} else {
+			message = "Error in running sync to given destination, it will be retried at next schedule"
 		}
 		if mResult.Completed {
 			apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
 				Type:    volsyncv1alpha1.ConditionSynchronizing,
 				Status:  metav1.ConditionFalse,
 				Reason:  volsyncv1alpha1.SynchronizingReasonCleanup,
-				Message: "Cleaning up",
+				Message: message,
 			})
 			if ok, err := updateLastSyncSource(instance, metrics, logger); !ok {
 				return mover.InProgress().ReconcileResult(), err
 			}
 		}
+		return ctrl.Result{}, err
 	} else {
 		mResult, err = dataMover.Cleanup(ctx)
 		if mResult.Completed {

@@ -3,6 +3,8 @@ package rsync
 import (
 	"context"
 	"fmt"
+	"strings"
+
 	"github.com/backube/volsync/lib/endpoint"
 	"github.com/backube/volsync/lib/transfer"
 	"github.com/backube/volsync/lib/transport"
@@ -14,7 +16,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	errorsutil "k8s.io/apimachinery/pkg/util/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"strings"
 )
 
 type Client struct {
@@ -40,23 +41,40 @@ func (tc *Client) PVCs() []*corev1.PersistentVolumeClaim {
 	return pvcs
 }
 
-func (tc *Client) IsCompleted(c client.Client) (bool, error) {
+func (tc *Client) Status(c client.Client) (*transfer.Status, error) {
 	podList := &corev1.PodList{}
 	err := c.List(context.Background(), podList, client.MatchingLabels(tc.options.SourcePodMeta.Labels()))
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 
 	for _, pod := range podList.Items {
 		if pod.Status.ContainerStatuses != nil || len(pod.Status.ContainerStatuses) > 0 {
 			for _, containerStatus := range pod.Status.ContainerStatuses {
-				if containerStatus.Name == "rsync" && containerStatus.State.Terminated != nil && containerStatus.State.Terminated.ExitCode == 0 {
-					return true, nil
+				if containerStatus.Name == "rsync" && containerStatus.State.Terminated != nil {
+					if containerStatus.State.Terminated.ExitCode == 0 {
+						return &transfer.Status{
+							Completed: &transfer.Completed{
+								Successful: true,
+								Failure:    false,
+								FinishedAt: &containerStatus.State.Terminated.FinishedAt,
+							},
+						}, nil
+					} else {
+						return &transfer.Status{
+							Running: nil,
+							Completed: &transfer.Completed{
+								Successful: false,
+								Failure:    true,
+								FinishedAt: &containerStatus.State.Terminated.FinishedAt,
+							},
+						}, nil
+					}
 				}
 			}
 		}
 	}
-	return false, err
+	return nil, fmt.Errorf("unable to find the appropriate container to inspect status for rsync transfer")
 }
 
 func (tc *Client) MarkForCleanup(c client.Client, key, value string) error {

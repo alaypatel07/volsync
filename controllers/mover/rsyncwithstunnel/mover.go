@@ -274,13 +274,20 @@ func (m *Mover) reconcileRsyncStunnelSource(c client.Client) (mover.Result, erro
 		return mover.Complete(), fmt.Errorf("invalid transport annotation found")
 	}
 
-	complete, err := rsyncClient.IsCompleted(m.client)
+	status, err := rsyncClient.Status(m.client)
 	if err != nil {
 		return mover.InProgress(), err
 	}
 
-	if !complete {
+	switch {
+	case status.Running != nil:
+		// retry
 		return mover.InProgress(), nil
+	case status.Completed != nil && status.Completed.Failure:
+		return mover.Complete(), fmt.Errorf("rsync client errored out")
+	case status.Completed != nil && status.Completed.Successful:
+		// mark complete
+		return mover.Complete(), nil
 	}
 
 	err = rsyncClient.MarkForCleanup(c, cleanupLabelKey, string(m.ownerMeta.GetUID()))

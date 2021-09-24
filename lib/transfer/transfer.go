@@ -3,6 +3,7 @@ package transfer
 import (
 	"context"
 	"fmt"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/backube/volsync/lib/endpoint"
 	"github.com/backube/volsync/lib/transport"
@@ -38,9 +39,24 @@ type Client interface {
 	// PVCs returns the list of PVCs the transfer will migrate
 	PVCs() []*corev1.PersistentVolumeClaim
 	// IsCompleted returns whether the client is done
-	IsCompleted(c client.Client) (bool, error)
+	Status(c client.Client) (*Status, error)
 	// MarkForCleanup adds a key-value label to all the resources to be cleaned up
 	MarkForCleanup(c client.Client, key, value string) error
+}
+
+type Status struct {
+	Running   *Running
+	Completed *Completed
+}
+
+type Running struct {
+	StartedAt *metav1.Time
+}
+
+type Completed struct {
+	Successful bool
+	Failure    bool
+	FinishedAt *metav1.Time
 }
 
 // IsPodHealthy is a utility function that can be used by various
