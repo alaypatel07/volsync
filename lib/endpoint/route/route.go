@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/backube/volsync/lib/endpoint"
 	"github.com/backube/volsync/lib/meta"
+	"github.com/backube/volsync/lib/utils"
 	routev1 "github.com/openshift/api/route/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -237,4 +238,26 @@ func (r *Endpoint) setFields(c client.Client) error {
 	}
 
 	return nil
+}
+
+func (r *Endpoint) MarkForCleanup(c client.Client, key, value string) error {
+	// update service
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      r.namespacedName.Name,
+			Namespace: r.namespacedName.Namespace,
+		},
+	}
+	err := utils.UpdateWithLabel(c, svc, key, value)
+	if err != nil {
+		return err
+	}
+
+	route := &routev1.Route{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      r.namespacedName.Name,
+			Namespace: r.namespacedName.Namespace,
+		},
+	}
+	return utils.UpdateWithLabel(c, route, key, value)
 }

@@ -36,7 +36,7 @@ BUNDLE_METADATA_OPTS ?= $(BUNDLE_CHANNELS) $(BUNDLE_DEFAULT_CHANNEL)
 #
 # For example, running 'make bundle-build bundle-push catalog-build catalog-push' will build and push both
 # backube/volsync-bundle:$VERSION and backube/volsync-catalog:$VERSION.
-IMAGE_TAG_BASE ?= quay.io/backube/volsync
+IMAGE_TAG_BASE ?= quay.io/alaypatel07/volsync
 
 # BUNDLE_IMG defines the image:tag used for the bundle.
 # You can use it as an arg. (E.g make bundle-build BUNDLE_IMG=<some-registry>/<project-name-bundle>:<tag>)
@@ -102,7 +102,7 @@ helm-lint: helm ## Lint Helm chart
 ENVTEST_ASSETS_DIR=$(shell pwd)/testbin
 TEST_ARGS ?= -progress -randomizeAllSpecs -randomizeSuites -slowSpecThreshold 30 -p -cover -coverprofile cover.out -outputdir .
 TEST_PACKAGES ?= ./...
-test: manifests generate lint helm-lint ginkgo ## Run tests.
+test: manifests generate helm-lint ginkgo ## Run tests.
 	mkdir -p ${ENVTEST_ASSETS_DIR}
 	test -f ${ENVTEST_ASSETS_DIR}/setup-envtest.sh || curl -sSLo ${ENVTEST_ASSETS_DIR}/setup-envtest.sh https://raw.githubusercontent.com/kubernetes-sigs/controller-runtime/v0.8.3/hack/setup-envtest.sh
 	source ${ENVTEST_ASSETS_DIR}/setup-envtest.sh; fetch_envtest_tools $(ENVTEST_ASSETS_DIR); setup_envtest_env $(ENVTEST_ASSETS_DIR); $(GINKGO) $(TEST_ARGS) $(TEST_PACKAGES)
@@ -115,7 +115,7 @@ test-e2e: kuttl ## Run e2e tests. Requires cluster w/ VolSync already installed
 ##@ Build
 
 .PHONY: build
-build: generate lint ## Build manager binary.
+build: generate ## Build manager binary.
 	go build -o bin/manager -ldflags -X=main.volsyncVersion=$(VERSION) main.go
 
 .PHONY: cli
@@ -125,7 +125,7 @@ bin/kubectl-volsync: lint
 	go build -o $@ -ldflags -X=main.volsyncVersion=$(VERSION) ./cmd/volsync
 
 .PHONY: run
-run: manifests generate lint  ## Run a controller from your host.
+run: manifests generate  ## Run a controller from your host.
 	go run -ldflags -X=main.volsyncVersion=$(VERSION) ./main.go
 
 .PHONY: docker-build

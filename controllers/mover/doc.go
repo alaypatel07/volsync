@@ -26,7 +26,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 // the reconcile.
 //
 // Movers implement the actual synchronization of data and return a Result from
-// each invocation. When one of the Mover's functions returns Completed(), the
+// each invocation. When one of the Mover's functions returns FinishedAt(), the
 // operation (either synchronization or cleanup of a previous synchronization is
 // considered to be completed).
 package mover

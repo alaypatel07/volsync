@@ -19,9 +19,10 @@ package utils
 
 import (
 	"context"
-
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/util/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -44,21 +45,46 @@ func MarkForCleanup(owner metav1.Object, obj metav1.Object) {
 // associated with "owner". The "types" array should contain one object of each
 // type to clean up.
 func CleanupObjects(ctx context.Context, c client.Client,
-	logger logr.Logger, owner metav1.Object, types []client.Object) error {
+	logger logr.Logger, owner metav1.Object, types,
+	iterativeTypes []client.Object) error {
 	uid := owner.GetUID()
 	l := logger.WithValues("owned-by", uid)
-	options := []client.DeleteAllOfOption{
+	deleteAllOfOptions := []client.DeleteAllOfOption{
 		client.MatchingLabels{cleanupLabelKey: string(uid)},
 		client.InNamespace(owner.GetNamespace()),
 		client.PropagationPolicy(metav1.DeletePropagationBackground),
 	}
 	l.Info("deleting temporary objects")
 	for _, obj := range types {
-		err := c.DeleteAllOf(ctx, obj, options...)
+		err := c.DeleteAllOf(ctx, obj, deleteAllOfOptions...)
 		if client.IgnoreNotFound(err) != nil {
 			l.Error(err, "unable to delete object(s)")
 			return err
 		}
 	}
-	return nil
+
+	listOptions := []client.ListOption{
+		client.MatchingLabels{cleanupLabelKey: string(uid)},
+		client.InNamespace(owner.GetNamespace()),
+	}
+	errs := []error{}
+	for _, objList := range iterativeTypes {
+		ulist := &unstructured.UnstructuredList{}
+		ulist.SetGroupVersionKind(objList.GetObjectKind().GroupVersionKind())
+		err := c.List(ctx, ulist, listOptions...)
+		if err != nil {
+			// if we hit error with one api still try all others
+			errs = append(errs, err)
+			continue
+		}
+		for _, item := range ulist.Items {
+			err = c.Delete(ctx, &item, client.PropagationPolicy(metav1.DeletePropagationBackground))
+			if err != nil {
+				// if we hit error deleting on continue delete others
+				errs = append(errs, err)
+			}
+		}
+
+	}
+	return errors.NewAggregate(errs)
 }

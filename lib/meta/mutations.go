@@ -30,6 +30,16 @@ type metamutation struct {
 	m *metav1.ObjectMeta
 }
 
+// commandMutation helps to add commands before and after the original command
+type commandMutation struct {
+	originalCommand string
+}
+
+// addContainer helps to add containers to the original podSpec
+type addContainer struct {
+	c *corev1.Container
+}
+
 func (p *podmutation) Type() MutationType {
 	return p.t
 }

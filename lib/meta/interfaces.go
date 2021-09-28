@@ -54,3 +54,17 @@ type ObjectMetaMutation interface {
 	// OwnerReferences returns a list of OwnerReferences
 	OwnerReferences() []metav1.OwnerReference
 }
+
+type CommandMutation interface {
+	Mutation
+	Command(originalCommand, before, after []string) []string
+}
+
+type AddContainerMutation interface {
+	Mutation
+	AddContainer(c *corev1.Container) error
+}
+
+type ExportServerLogToSidecarContainerMutation interface {
+	Mutation
+}

@@ -174,17 +174,24 @@ func reconcileSrcUsingCatalog(
 	var mResult mover.Result
 	if shouldSync && !apimeta.IsStatusConditionFalse(instance.Status.Conditions, volsyncv1alpha1.ConditionSynchronizing) {
 		mResult, err = dataMover.Synchronize(ctx)
+		var message string
+		if err == nil {
+			message = "Cleaning up"
+		} else {
+			message = "Error in running sync to given destination, it will be retried at next schedule"
+		}
 		if mResult.Completed {
 			apimeta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
 				Type:    volsyncv1alpha1.ConditionSynchronizing,
 				Status:  metav1.ConditionFalse,
 				Reason:  volsyncv1alpha1.SynchronizingReasonCleanup,
-				Message: "Cleaning up",
+				Message: message,
 			})
 			if ok, err := updateLastSyncSource(instance, metrics, logger); !ok {
 				return mover.InProgress().ReconcileResult(), err
 			}
 		}
+		return ctrl.Result{}, err
 	} else {
 		mResult, err = dataMover.Cleanup(ctx)
 		if mResult.Completed {
@@ -204,10 +211,10 @@ func reconcileSrcUsingCatalog(
 func (r *ReplicationSourceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&volsyncv1alpha1.ReplicationSource{}).
-		Owns(&batchv1.Job{}).
+		Owns(&corev1.Pod{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&corev1.Secret{}).
-		Owns(&corev1.Service{}).
+		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.ServiceAccount{}).
 		Owns(&rbacv1.Role{}).
 		Owns(&rbacv1.RoleBinding{}).
